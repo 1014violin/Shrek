@@ -1,0 +1,1064 @@
+/**
+ * Alexzandra Morris  <am5246@bard.edu>
+ * Georgia Doing      <gd8473@bard.edu>
+ * Van Mai Nguyen Thi <vn4720@bard.edu>
+ *
+ * CMSC 318: Final Project
+ *
+ * References:
+ *
+ * Morphing:
+ *   http://www.cs.cmu.edu/afs/andrew/scs/cs/15-463/f07/proj3/www/wwedler/
+ *   http://www.academia.edu/4044037/Review_of_Image_Morphing_Methods_and_Techniques
+ * Triangulation (used in morphing):
+ *   Found at: https://github.com/shiffman/Face-It
+ *     The code is Daniel Shiffman's modification of the implementation
+ *     from http://wiki.processing.org/w/Triangulation by Tom Carden
+ *   
+ * 
+ * 
+ * 
+ * December, 2014
+ */
+
+/*
+IMPORT STATEMENTS
+ */
+import gab.opencv.*;
+import org.opencv.core.*;
+import org.opencv.core.Mat;
+import org.opencv.imgproc.*;
+import processing.video.*;
+import java.awt.Rectangle;//import for Rectangle ArrayList
+import Jama.*;
+import triangulate.*;
+
+ArrayList<Rectangle> humanRects;
+ArrayList<Rectangle> shrekRects;
+ArrayList<PVector> humanPoints;
+ArrayList<PVector> shrekPoints;
+ArrayList<Pair> pairs;
+ArrayList<TrianglePair> mesh;
+ArrayList<Triangle> morphedMesh;
+
+PImage human; // human face
+PImage shrek; // Shrek face
+PImage mHuman; // morphed human face
+PImage mShrek; // morphed Shrek face
+PImage blank1, blank2;
+
+float amt = 0.5;
+int triangleType;
+/* triangleTypes:
+ * 0 = horizontal top base
+ * 1 = horizontal bottom base
+ * 2 = 2 left + 1 right edge
+ * 3 = 1 left + 2 right edges
+ * 4 = type 2 or 3
+ */
+
+// Objects for human face & feature detection
+Capture cap;
+OpenCV cvFace;
+OpenCV cvEyes;
+OpenCV cvNose;
+OpenCV cvMouth;
+
+boolean humanDetected = false;
+boolean halfFace = false;
+
+/*
+MAT OBJECTS DECLARED:
+ matrices associated with the opencv objects 
+ */
+Mat movieMat;
+Mat movieResMat;
+Mat frameMat;
+Mat faceTempMat;
+Mat leftEyeMat;
+Mat rightEyeMat;
+Mat mouthMat;
+Mat noseMat;
+Mat frameResMat;
+
+/*
+Movie and PImages initialized 
+ */
+Movie src;
+PImage frame; 
+PImage shrekFaceTemp;
+PImage shrekLeftEye;
+PImage shrekRightEye;
+PImage mouth;
+PImage nose;
+PImage result;
+
+/*
+Booleans indicating if shrek's features were detected
+ */
+boolean shrekDetected = false; 
+boolean faceDetected = false; 
+boolean L_eyeDetected = false; 
+boolean R_eyeDetected = false;
+boolean noseDetected = false; 
+boolean mouthDetected = false; 
+
+void setup() {
+  shrekTemplateSetup();
+  humanDetectSetup();
+  morphSetup();
+
+  size(frame.width + cap.width, 2*frame.height);
+}
+
+
+
+// Setup for Shrek template matching
+void shrekTemplateSetup() {
+  /*
+  LOAD THE IMAGES
+   */
+  src = new Movie(this, "shrek_arewethereyet.mp4");
+
+  
+  frame = loadImage("shrekScene.jpg");
+  shrekFaceTemp = loadImage("template.jpg");
+  shrekLeftEye = loadImage("leftEyeTemplate.jpg");
+  shrekRightEye = loadImage("rightEyeTemplate.jpg");
+  mouth = loadImage("mouthTemplate.jpg");
+  nose = loadImage("noseTemplate.jpg");
+
+  src.loop();//loop the src so it keeps playing
+
+  /*
+   *Call imgtoMat(PImage) which converts a .jpg image to a Mat object.
+   *imgtoMat(PImage) is written below
+   */
+  frameMat = imgtoMat(frame);
+  faceTempMat = imgtoMat(shrekFaceTemp);
+  leftEyeMat = imgtoMat(shrekLeftEye);
+  rightEyeMat = imgtoMat(shrekRightEye);
+  mouthMat = imgtoMat(mouth);
+  noseMat = imgtoMat(nose);
+  frameResMat = imgtoMat(frame);
+}
+
+// Setup for human face & feature detection
+void humanDetectSetup() {
+  cap = new Capture(this, frame.height*640/480, frame.height);
+  cap.start();
+
+  cvFace = new OpenCV(this, cap.width, cap.height);
+  cvEyes = new OpenCV(this, cap.width, cap.height);
+  cvNose = new OpenCV(this, cap.width, cap.height);
+  cvMouth = new OpenCV(this, cap.width, cap.height);
+  cvFace.loadCascade(OpenCV.CASCADE_FRONTALFACE); 
+  cvEyes.loadCascade(OpenCV.CASCADE_EYE);
+  cvNose.loadCascade(OpenCV.CASCADE_NOSE);
+  cvMouth.loadCascade(OpenCV.CASCADE_MOUTH);
+}
+
+// Setup for morphing
+
+void morphSetup() {
+  blank1 = loadImage("transparent.gif");//("blank.jpg");
+  blank2 = loadImage("transparent.gif");//("blank.jpg");
+}
+
+
+
+/*
+Mat imgtoMat(PImage img): converts Pimage to Mat Object
+ */
+Mat imgtoMat(PImage img) {//use this to turn an image into a mat
+  OpenCV ocv = new OpenCV(this, img);
+  Mat m = ocv.getColor();
+  return m;
+}/*
+END OF imgtoMat(PImage img) 
+ */
+
+
+/*
+Mat movietoMat(Movie mov): converts Movie to Mat Object
+ */
+Mat movietoMat(Movie mov) {//use this to turn a movie into a mat
+  OpenCV ocv = new OpenCV(this, mov);
+  ocv.loadImage(mov);
+  Mat m = ocv.getColor();
+
+  return m;
+}/*
+END OF movietoMat(Movie mov) 
+ */
+
+/*
+ Point getMatchedPoint(Mat imgMat, Mat tempMat, Mat resultMat, int method):
+ takes 3 mats and a built in template matching method and 
+ returns the Point object where the template and the image match
+ */
+Point getMatchedPoint(Mat imgMat, Mat tempMat, Mat resultMat, int method) {
+  Imgproc.matchTemplate(imgMat, tempMat, resultMat, method);
+  //newRes is a MinMaxLocResult object. Creating this object allows 
+  //acces to the maxLoc.x and the maxLoc.y
+  Core.MinMaxLocResult theResult =Core.minMaxLoc(resultMat);
+  Point p = new Point((int)theResult.maxLoc.x, (int)theResult.maxLoc.y);
+
+  return p;
+}/*
+End of getMatchedPoint(Mat imgMat, Mat tempMat, Mat resultMat, int method)
+ */
+
+
+/*
+calcMSSD(Point p, PImage img, PImage template) calculates a "mean" SSD
+ *this function is used later to choose a threshhold inn which to evaluate shrek's features
+ */
+float calcMSSD(Point p, PImage img, PImage template) {
+
+  int x = (int)p.x;
+  int y = (int)p.y;
+  float ssd = 0;
+  int count = 0;
+  for (int vx = x; vx<x+template.width; vx++) {
+    for (int vy = y; vy<y+template.height; vy++) {
+      count++;
+      color videoC = img.get(vx, vy);
+      color temC = template.get(vx-x, vy-y );
+
+
+      float rdiff = abs(red(temC) - red(videoC));
+      float gdiff = abs(green(temC) - green(videoC));
+      float bdiff = abs(blue(temC) - blue(videoC));
+
+      float euDiff = sqrt(rdiff*rdiff + gdiff*gdiff + bdiff*bdiff);
+
+      ssd = (count-1)*ssd/count + (euDiff)/count;//calculating average
+    }
+  }
+
+  return ssd;
+}/*
+End of calcMSSD(Point p, PImage img, PImage template)
+ */
+
+
+/*
+frameImg(Point match, PImage template) takes a the "match point", which is the point where the template matches 
+ a spot in the frame and a template in its parameters. 
+ 
+ It takes a screen shot of the frame. Then it makes the rectangle that is drawn over the matched point
+ a PImage
+ */
+PImage frameImg(Point match, PImage template) {
+  PImage screenShot = get();//get screen shot
+  PImage newFrameImg = screenShot.get((int)(match.x), (int)(match.y), (int)(template.width), (int)(template.height));
+
+  return newFrameImg;
+}
+
+PImage frameImg(int x, int y, int w, int h) {
+  PImage screenShot = get();//get screen shot
+  PImage newFrameImg = screenShot.get(x, y, w, h);
+
+  return newFrameImg;
+}
+
+
+void draw() {
+  background(0);
+  humanDetected = false;
+  halfFace = false;
+  shrekDetected = false; // delete if adding tracking
+
+  image(src, 0, 0); 
+  image(cap, frame.width, 0);
+
+  templateMatch(); 
+  //humanDetect();
+
+  if (shrekDetected) {
+    humanDetect();
+    if (humanDetected) {
+      //image(shrek, 0, frame.height);
+      //image(human, shrek.width, frame.height);
+      morph();
+      image(mShrek, shrek.width+human.width, frame.height);
+      image(mHuman, shrek.width+human.width+mShrek.width, frame.height);
+      tint(255, 160);
+      image(mShrek, shrekRects.get(0).x, shrekRects.get(0).y);
+      tint(255, 95);
+      image(mHuman, shrekRects.get(0).x, shrekRects.get(0).y);
+      noTint();
+    } 
+  }
+}//end of draw
+
+void movieEvent(Movie m) {
+  m.read();
+}
+
+void captureEvent(Capture c) {
+  c.read();
+}
+
+void humanDetect() {
+  // TODO stub
+  cvFace.loadImage(cap);
+  cvEyes.loadImage(cap);
+  cvNose.loadImage(cap);
+  cvMouth.loadImage(cap);
+
+  Rectangle[] faces = cvFace.detect();
+  if (faces.length > 0) {
+
+    cvEyes.setROI( faces[0].x, faces[0].y, faces[0].width*2/3, faces[0].height*2/3 );
+    Rectangle[] leye = cvEyes.detect();
+    if (leye.length > 0) {
+
+      cvEyes.setROI( faces[0].x+faces[0].width/3, faces[0].y, faces[0].width*2/3, faces[0].height*2/3 );
+      Rectangle[] reye = cvEyes.detect();
+      halfFace = true;
+      if (reye.length > 0) {
+
+        cvNose.setROI( faces[0].x, faces[0].y+faces[0].height/4, faces[0].width, faces[0].height*5/8 );
+        Rectangle[] nose = cvNose.detect();
+        if (nose.length > 0) {
+
+          cvMouth.setROI( faces[0].x, faces[0].y+(int)(faces[0].height*2/3), faces[0].width, faces[0].height/3 );
+          Rectangle[] mouth = cvMouth.detect();
+          if (mouth.length > 0) {
+
+            leye[0].setLocation(leye[0].x+faces[0].x, leye[0].y+faces[0].y);
+            reye[0].setLocation(reye[0].x+faces[0].x+faces[0].width/3, reye[0].y+faces[0].y);
+            nose[0].setLocation(nose[0].x+faces[0].x, nose[0].y+faces[0].y+faces[0].height/4);
+            mouth[0].setLocation(mouth[0].x+faces[0].x, mouth[0].y+faces[0].y+(int)(faces[0].height*2/3));
+
+            humanRects = new ArrayList<Rectangle>();
+            humanRects.add(faces[0]);
+            humanRects.add(leye[0]);
+            humanRects.add(reye[0]);
+            humanRects.add(nose[0]);
+            humanRects.add(mouth[0]);
+
+            human = frameImg(humanRects.get(0).x+frame.width, humanRects.get(0).y, humanRects.get(0).width, humanRects.get(0).height); 
+            shrek = frameImg(shrekRects.get(0).x, shrekRects.get(0).y, shrekRects.get(0).width, shrekRects.get(0).height);
+
+            humanDetected = true;
+            //drawHumanRects(); // for testing
+            humanPoints();
+          }
+        }
+      }
+    }
+  }
+}
+
+void humanPoints() {
+  humanPoints = new ArrayList<PVector>();
+
+  // left eye
+  PVector v = new PVector(humanRects.get(1).x, humanRects.get(1).y+humanRects.get(1).height/2);
+  humanPoints.add(v);
+  v = new PVector(humanRects.get(1).x+humanRects.get(1).width, humanRects.get(1).y+humanRects.get(1).height/2);
+  humanPoints.add(v);
+
+  // right eye
+  PVector v2 = new PVector(humanRects.get(2).x, humanRects.get(2).y+humanRects.get(2).height/2);
+  humanPoints.add(v2);
+  PVector v3 = new PVector(humanRects.get(2).x+humanRects.get(2).width, humanRects.get(2).y+humanRects.get(2).height/2);
+  humanPoints.add(v3);
+
+  // between eyes
+  v3 = PVector.add(v, v2);
+  //v.add(v2);
+  v3.div(2);
+  humanPoints.add(v3);
+
+  // nose
+  v = new PVector(humanRects.get(3).x + humanRects.get(3).width/6, humanRects.get(3).y+humanRects.get(3).height*2/3);
+  humanPoints.add(v);
+  v = new PVector(humanRects.get(3).x + humanRects.get(3).width*5/6, humanRects.get(3).y+humanRects.get(3).height*2/3);
+  humanPoints.add(v);
+
+  // mouth
+  v = new PVector(humanRects.get(4).x, humanRects.get(4).y+humanRects.get(4).height/4);
+  humanPoints.add(v);
+  v = new PVector(humanRects.get(4).x+humanRects.get(4).width, humanRects.get(4).y+humanRects.get(4).height/4);
+  humanPoints.add(v);
+
+  // chin
+  v = new PVector(humanRects.get(0).x+humanRects.get(0).width/2, humanRects.get(0).y+humanRects.get(0).height);
+  humanPoints.add(v);
+
+  // BOUNDARY points
+  // top
+  v = new PVector(humanPoints.get(0).x, humanPoints.get(0).y - humanRects.get(1).height);
+  humanPoints.add(v);
+  v = new PVector(humanPoints.get(1).x, humanPoints.get(1).y - humanRects.get(1).height*3/2);
+  humanPoints.add(v);
+  v = new PVector(humanPoints.get(2).x, humanPoints.get(2).y - humanRects.get(2).height*3/2);
+  humanPoints.add(v);
+  v = new PVector(humanPoints.get(3).x, humanPoints.get(3).y - humanRects.get(2).height);
+  humanPoints.add(v);
+
+  // bottom
+  v = new PVector(humanPoints.get(0).x, humanPoints.get(7).y);
+  humanPoints.add(v);
+  v = new PVector(humanPoints.get(3).x, humanPoints.get(7).y);
+  humanPoints.add(v);
+
+  //drawHumanPoints(); // test
+  normalHumanPoints();
+}
+
+// Estimate feature points based on Shrek templates
+void shrekPoints() {
+  shrekPoints = new ArrayList<PVector>(); // reset list of feature points
+
+  // left eye
+  PVector v = new PVector(shrekRects.get(1).x + shrekRects.get(1).width/3, shrekRects.get(1).y+shrekRects.get(1).height/2);
+  shrekPoints.add(v);
+  v = new PVector(shrekRects.get(1).x+shrekRects.get(1).width*2/3, shrekRects.get(1).y+shrekRects.get(1).height/2);
+  shrekPoints.add(v);
+
+  // right eye
+  PVector v2 = new PVector(shrekRects.get(2).x, shrekRects.get(2).y+shrekRects.get(2).height/2);
+  shrekPoints.add(v2);
+  PVector v3 = new PVector(shrekRects.get(2).x+shrekRects.get(2).width*3/5, shrekRects.get(2).y+shrekRects.get(2).height/2);
+  shrekPoints.add(v3);
+
+  // between eyes
+  v3 = PVector.add(v, v2);
+  //v.add(v2);
+  v3.div(2);
+  shrekPoints.add(v3);
+
+  // nose
+  v = new PVector(shrekRects.get(3).x, shrekRects.get(3).y+shrekRects.get(3).height/2);
+  shrekPoints.add(v);
+  v = new PVector(shrekRects.get(3).x + shrekRects.get(3).width, shrekRects.get(3).y+shrekRects.get(3).height/2);
+  shrekPoints.add(v);
+
+  // mouth
+  v = new PVector(shrekRects.get(4).x, shrekRects.get(4).y+shrekRects.get(4).height/4);
+  shrekPoints.add(v);
+  v = new PVector(shrekRects.get(4).x+shrekRects.get(4).width, shrekRects.get(4).y+shrekRects.get(4).height/4);
+  shrekPoints.add(v);
+
+  // chin
+  v = new PVector(shrekRects.get(4).x+shrekRects.get(4).width/2, shrekRects.get(4).y+shrekRects.get(4).height*3/2);
+  shrekPoints.add(v);
+
+  // BOUNDARY points
+  // top
+  v = new PVector(shrekPoints.get(0).x, shrekRects.get(1).y);
+  shrekPoints.add(v);
+  v = new PVector(shrekPoints.get(1).x, shrekPoints.get(1).y - shrekRects.get(1).height);
+  shrekPoints.add(v);
+  v = new PVector(shrekPoints.get(2).x, shrekPoints.get(2).y - shrekRects.get(2).height);
+  shrekPoints.add(v);
+  v = new PVector(shrekPoints.get(3).x, shrekRects.get(2).y);
+  shrekPoints.add(v);
+
+  // bottom
+  v = new PVector(shrekRects.get(1).x+shrekRects.get(1).width/6, shrekPoints.get(7).y);
+  shrekPoints.add(v);
+  v = new PVector(shrekRects.get(2).x+shrekRects.get(2).width, shrekPoints.get(7).y);
+  shrekPoints.add(v);
+
+  //drawShrekPoints(); // test
+
+  normalShrekPoints();
+}
+
+void normalShrekPoints() {
+  for (int i=0; i<shrekPoints.size (); i++) {
+    PVector v = new PVector(shrekPoints.get(i).x-shrekRects.get(0).x, shrekPoints.get(i).y-shrekRects.get(0).y);
+    shrekPoints.set(i, v);
+  }
+}
+
+void normalHumanPoints() {
+  for (int i=0; i<humanPoints.size (); i++) {
+    PVector v = new PVector(humanPoints.get(i).x-humanRects.get(0).x, humanPoints.get(i).y-humanRects.get(0).y);
+    humanPoints.set(i, v);
+  }
+}
+
+void drawHumanPoints() {
+  stroke(255, 0, 0);
+  for (int i=0; i<humanPoints.size (); i++) {
+    ellipse(humanPoints.get(i).x+frame.width, humanPoints.get(i).y, 3, 3);
+  }
+}
+
+void drawShrekPoints() {
+  stroke(255, 0, 0);
+  for (int i=0; i<shrekPoints.size (); i++) {
+    ellipse(shrekPoints.get(i).x, shrekPoints.get(i).y, 3, 3);
+  }
+}
+
+void makePairs() { // TODO
+  if (humanPoints.size() != shrekPoints.size()) {
+    println("Sizes don't match");
+    return;
+  }
+  pairs = new ArrayList<Pair>();
+  for (int i=0; i<humanPoints.size (); i++) {
+    Pair p = new Pair(humanPoints.get(i), shrekPoints.get(i));
+    pairs.add(p);
+  }
+}
+
+void morph() {
+  morphedMesh = new ArrayList<Triangle>();
+  makePairs();
+
+  mesh = Triangulate.triangulatePairs(pairs); //of type ArrayList<TrianglePair>
+  drawMesh(); // test
+
+  makeMorphedMesh();
+  drawMorphedMesh(); // test
+
+  mHuman = blank1;
+  mHuman.resize(max(human.width, shrek.width), max(human.height, shrek.height));
+  mShrek = blank2;
+  mShrek.resize(max(human.width, shrek.width), max(human.height, shrek.height));
+
+  for (int i=0; i<morphedMesh.size (); i++) {
+    morphTriangles(i);
+  }
+  
+  mHuman.resize((int)shrek.width, (int)shrek.height);
+  mShrek.resize((int)shrek.width, (int)shrek.height);
+}
+
+// partly based on Keith's homography estimation
+Matrix affineMat(Triangle sou, Triangle des) {
+  double[][] a = new double[6][];
+
+  // Creates the estimation matrix                                                                                                                                         
+  //for (int i = 0; i < 3; i++) {
+  double l1 [] = { des.p1.x, des.p1.y, 1, 0, 0, 0 };
+  double l2 [] = { 0, 0, 0, des.p1.x, des.p1.y, 1 }; 
+  a[0] = l1;
+  a[1] = l2;
+  l1 = new double[] { des.p2.x, des.p2.y, 1, 0, 0, 0 };
+  l2 = new double[] { 0, 0, 0, des.p2.x, des.p2.y, 1 };
+  a[2] = l1;
+  a[3] = l2;
+  l1 = new double[] { des.p3.x, des.p3.y, 1, 0, 0, 0 };
+  l2 = new double[] { 0, 0, 0, des.p3.x, des.p3.y, 1 };
+  a[4] = l1;
+  a[5] = l2;
+
+  Matrix A = new Matrix(a);
+  double[][] b = new double[][] { {sou.p1.x}, {sou.p1.y}, {sou.p2.x}, {sou.p2.y}, {sou.p3.x}, {sou.p3.y} };
+  Matrix B = new Matrix(b);//, 6, 1);
+  
+  while (A.det() == 0) {
+    A.set(0, 0, A.get(0,0)+1);
+  } 
+  
+  Matrix temp = A.solve(B);
+  
+  Matrix M = new Matrix(2, 3);
+  M.set(0, 0, temp.get(0,0));
+  M.set(0, 1, temp.get(1,0));
+  M.set(0, 2, temp.get(2,0));
+  M.set(1, 0, temp.get(3,0));
+  M.set(1, 1, temp.get(4,0));
+  M.set(1, 2, temp.get(5,0));
+  
+  return M;
+}
+
+void morphTriangles(int i) {
+  Triangle des = morphedMesh.get(i);
+  Triangle srcH = mesh.get(i).getTriangleA();
+  Triangle srcS = getTriangleB(i);
+
+  Matrix MtoH = affineMat(srcH, des);
+  Matrix MtoS = affineMat(srcS, des);
+  
+  PVector[] p = msort(des);
+  
+  if (triangleType == 0) { // top base
+    Matrix l1 = mline(p[0], p[2]);
+    Matrix l2 = mline(p[1], p[2]);
+    morphBaseH(p, l1, l2, MtoH);
+    morphBaseS(p, l1, l2, MtoS);
+  } else if (triangleType == 1) { // bottom base
+    Matrix l1 = mline(p[0], p[1]);
+    Matrix l2 = mline(p[0], p[2]);  
+    morphBaseH(p, l1, l2, MtoH);
+    morphBaseS(p, l1, l2, MtoS);
+  } else {
+    Matrix l1 = mline(p[0], p[1]);
+    Matrix l2 = mline(p[1], p[2]);
+    Matrix longl = mline(p[0], p[2]);
+    double x = longl.get(0,0)*p[1].y+longl.get(1,0);
+    if (p[1].x <= x) { // LL + R
+      morphLLRH(p, l1, l2, longl, MtoH);
+      morphLLRS(p, l1, l2, longl, MtoS);
+    } else { // L + RR
+      morphLRRH(p, longl, l1, l2, MtoH);
+      morphLRRS(p, longl, l1, l2, MtoS);
+    }
+  }
+}
+
+// Human
+void morphBaseH(PVector[] p, Matrix l1, Matrix l2, Matrix mat) { // top/bottom base
+  for (int y = int(p[0].y); y <= p[2].y; y++) {
+    int minX = (int)( Math.round(l1.get(0,0)*y + l1.get(1,0)) );
+    int maxX = (int)( l2.get(0,0)*y+l2.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      /*if (x2 >= human.width || y2 >= human.height) {
+        println("ERROR "+x2+","+y2+" "+human.width+","+human.height+"\n\n\n");
+      }*/
+      //color c = human.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mHuman.set( x, y, human.get(x2, y2) );
+    }
+  }
+}
+
+// Shrek
+void morphBaseS(PVector[] p, Matrix l1, Matrix l2, Matrix mat) { // top/bottom base
+  for (int y = int(p[0].y); y <= p[2].y; y++) {
+    int minX = (int)( l1.get(0,0)*y+l1.get(1,0) );
+    int maxX = (int)( l2.get(0,0)*y+l2.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      //color c = shrek.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mShrek.set( x, y, shrek.get(x2, y2) );
+      /*double[][] xy = new double[][] { {x}, {y}, {1} };
+      Matrix XY = new Matrix(xy, 3, 1);
+      Matrix nXY = mat.times(XY);
+      mShrek.set(x, y, shrek.get((int)nXY.get(0,0), (int)nXY.get(1,0)) );*/
+    }
+  }
+}
+
+// Human
+void morphLLRH(PVector[] p, Matrix l1, Matrix l2, Matrix longl, Matrix mat) {  
+  for (int y = int(p[0].y); y < p[1].y; y++) {
+    int minX = (int)( l1.get(0,0)*y+l1.get(1,0) );
+    int maxX = (int)( longl.get(0,0)*y+longl.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      /*if (x2 >= human.width || y2 >= human.height) {
+        println("ERROR "+x2+","+y2+" "+human.width+","+human.height+"\n\n\n");
+      }*/
+      //color c = human.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mHuman.set( x, y, human.get(x2, y2) );
+      /*double[][] xy = new double[][] { {x}, {y}, {1} };
+      Matrix XY = new Matrix(xy, 3, 1);
+      println("\nMtoH SIZE = "+mat.getRowDimension()+","+mat.getColumnDimension());
+      println("\nXY ="+XY.get(0,0)+" "+XY.get(1,0)+" "+XY.get(2,0));
+      Matrix nXY = mat.times(XY);
+      println("Multiplied");
+      mHuman.set(x, y, human.get((int)nXY.get(0,0), (int)nXY.get(1,0)) );*/
+    }
+  } 
+  for (int y = int(p[1].y); y <= p[2].y; y++) {
+    int minX = (int)( l2.get(0,0)*y+l2.get(1,0) );
+    int maxX = (int)( longl.get(0,0)*y+longl.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      /*if (x2 >= human.width || y2 >= human.height) {
+        println("ERROR "+x2+","+y2+" "+human.width+","+human.height+"\n\n\n");
+      }*/
+      //color c = human.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mHuman.set( x, y, human.get(x2, y2) );
+    }
+  }
+}
+
+// Shrek
+void morphLLRS(PVector[] p, Matrix l1, Matrix l2, Matrix longl, Matrix mat) {  
+  for (int y = int(p[0].y); y < p[1].y; y++) {
+    int minX = (int)( l1.get(0,0)*y+l1.get(1,0) );
+    int maxX = (int)( longl.get(0,0)*y+longl.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      //color c = shrek.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mShrek.set( x, y, shrek.get(x2, y2) );
+    }
+  } 
+  for (int y = int(p[1].y); y <= p[2].y; y++) {
+    int minX = (int)( l2.get(0,0)*y+l2.get(1,0) );
+    int maxX = (int)( longl.get(0,0)*y+longl.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      //color c = shrek.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mShrek.set( x, y, shrek.get(x2, y2) );
+    }
+  }
+}
+
+// Human
+void morphLRRH(PVector[] p, Matrix longl, Matrix l1, Matrix l2, Matrix mat) {
+  for (int y = int(p[0].y); y < p[1].y; y++) {
+    int minX = (int)( longl.get(0,0)*y+longl.get(1,0) );
+    int maxX = (int)( l1.get(0,0)*y+l1.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      /*if (x2 >= human.width || y2 >= human.height) {
+        println("ERROR "+x2+","+y2+" "+human.width+","+human.height+"\n\n\n");
+      }*/
+      //color c = human.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mHuman.set( x, y, human.get(x2, y2) );
+    }
+  } 
+  for (int y = int(p[1].y); y <= p[2].y; y++) {
+    int minX = (int)( longl.get(0,0)*y+longl.get(1,0) );
+    int maxX = (int)( l2.get(0,0)*y+l2.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      /*if (x2 >= human.width || y2 >= human.height) {
+        println("ERROR "+x2+","+y2+" "+human.width+","+human.height+"\n\n\n");
+      }*/
+      //color c = human.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mHuman.set( x, y, human.get(x2, y2) );
+    }
+  }
+}
+
+// Shrek
+void morphLRRS(PVector[] p, Matrix longl, Matrix l1, Matrix l2, Matrix mat) {
+  for (int y = int(p[0].y); y < p[1].y; y++) {
+    int minX = (int)( longl.get(0,0)*y+longl.get(1,0) );
+    int maxX = (int)( l1.get(0,0)*y+l1.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      //color c = shrek.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mShrek.set( x, y, shrek.get(x2, y2) );
+    }
+  } 
+  for (int y = int(p[1].y); y <= p[2].y; y++) {
+    int minX = (int)( longl.get(0,0)*y+longl.get(1,0) );
+    int maxX = (int)( l2.get(0,0)*y+l2.get(1,0) );
+    for (int x = minX; x < maxX; x++) {
+      int x2 = (int)( x*mat.get(0,0) + y*mat.get(0,1) + mat.get(0,2) );
+      int y2 = (int)( x*mat.get(1,0) + y*mat.get(1,1) + mat.get(1,2) );
+      //color c = shrek.get(x2, y2);
+      //println("Color = "+red(c)+","+green(c)+","+blue(c));
+      mShrek.set( x, y, shrek.get(x2, y2) );
+    }
+  }
+}
+
+
+
+Matrix mline(PVector p1, PVector p2) {
+  double[][] a = new double[][] {
+    {p1.y, 1}, {p2.y, 1}
+  };
+  Matrix A = new Matrix(a, 2, 2);
+  
+  while (A.det() == 0) {
+    A.set(0, 0, p1.y+1);
+  }
+  A = A.inverse();
+  
+  double[][] b = new double[][] { {p1.x}, {p2.x} };
+  Matrix B = new Matrix(b, 2, 1);
+  
+  return A.times(B);
+}
+
+
+PVector[] msort(Triangle des) {
+  PVector[] p = new PVector[3];
+  
+  if (des.p1.y < des.p2.y) {
+    if (des.p1.y < des.p3.y) {
+      p[0] = des.p1;
+      if (des.p2.y < des.p3.y) {
+        p[1] = des.p2;
+        p[2] = des.p3;
+        triangleType = 4;
+      } else if (des.p2.y > des.p3.y) {
+        p[1] = des.p3;
+        p[2] = des.p2;
+        triangleType = 4;
+      } else {   // p2.y == p3.y    bottom base
+        triangleType = 1;
+        if (des.p2.x <= des.p3.x) {
+          p[1] = des.p2;
+          p[2] = des.p3;
+        } else {
+          p[1] = des.p3;
+          p[2] = des.p2;
+        }
+      }
+    } else if (des.p1.y > des.p3.y) {
+      p[0] = des.p3;
+      p[1] = des.p1;
+      p[2] = des.p2;
+      triangleType = 4;
+    } else {    // p1.y = p3.y    top base
+      triangleType = 0;
+      p[2] = des.p2;
+      if (des.p1.x <= des.p3.x) {
+        p[0] = des.p1;
+        p[1] = des.p3;
+      } else {
+        p[0] = des.p3;
+        p[1] = des.p1;
+      }
+    }
+  } else if (des.p1.y > des.p2.y) {
+    if (des.p2.y < des.p3.y) {
+      p[0] = des.p2;
+      if (des.p1.y < des.p3.y) {
+        p[1] = des.p1;
+        p[2] = des.p3;
+        triangleType = 4;
+      } else if (des.p1.y > des.p3.y) {
+        p[1] = des.p3;
+        p[2] = des.p1;
+        triangleType = 4;
+      } else {    // p1.y == p3.y    bottom base
+        triangleType = 1;
+        if (des.p1.x <= des.p3.x) {
+          p[1] = des.p1;
+          p[2] = des.p3;
+        } else {
+          p[1] = des.p3;
+          p[2] = des.p1;
+        }
+      }
+    } else if (des.p2.y > des.p3.y) {
+      triangleType = 4;
+      p[0] = des.p3;
+      p[1] = des.p2;
+      p[2] = des.p1;
+    } else {    // p2.y == p3.y   top base
+      triangleType = 0;
+      p[2] = des.p1;
+      if (des.p2.x <= des.p3.x) {
+        p[0] = des.p2;
+        p[1] = des.p3;
+      } else {    // p2.x > p3.x
+        p[0] = des.p3;
+        p[1] = des.p2;
+      }
+    }
+  } else {                  // p1.y == p2.y
+    if (des.p3.y <= des.p1.y) {    // bottom base
+      triangleType = 1;
+      p[0] = des.p3;
+      if (des.p1.x <= des.p2.x) {
+        p[1] = des.p1;
+        p[2] = des.p2;
+      } else {
+        p[1] = des.p2;
+        p[2] = des.p1;
+      }
+    } else {    // p3.y >  p1.y=p2.y  // top base
+      triangleType = 0;
+      p[2] = des.p3;
+      if (des.p1.x <= des.p2.x) {
+        p[0] = des.p1;
+        p[1] = des.p2;
+      } else {
+        p[0] = des.p2;
+        p[1] = des.p1;
+      }
+    } 
+  }
+  return p;
+}
+
+void makeMorphedMesh() {
+  for (int i=0; i<mesh.size (); i++) {
+    morphedMesh.add(mesh.get(i).mix(amt));
+  }
+}
+
+void drawMorphedMesh() {
+  for (int i=0; i<morphedMesh.size (); i++) {
+    Triangle t = morphedMesh.get(i);
+    noFill();
+    strokeWeight(1);
+    stroke(255);
+    beginShape(TRIANGLES);
+    for (int j=0; j<3; j++) {
+      vertex(t.p1.x, t.p1.y+frame.height);
+      vertex(t.p2.x, t.p2.y+frame.height);
+      vertex(t.p3.x, t.p3.y+frame.height);
+    }
+    endShape();
+  }
+}
+
+void drawMesh() {
+  for (int i=0; i<mesh.size (); i++) {
+    Triangle human = mesh.get(i).getTriangleA();
+    Triangle shrek = getTriangleB(i);//new Triangle(mesh.get(i).p1.b, mesh.get(i).p2.b, mesh.get(i).p3.b);
+    noFill();
+    strokeWeight(1);
+    beginShape(TRIANGLES);
+    for (int j=0; j<3; j++) {
+      vertex(human.p1.x+frame.width, human.p1.y);
+      vertex(human.p2.x+frame.width, human.p2.y);
+      vertex(human.p3.x+frame.width, human.p3.y);
+      vertex(shrek.p1.x, shrek.p1.y);
+      vertex(shrek.p2.x, shrek.p2.y);
+      vertex(shrek.p3.x, shrek.p3.y);
+    }
+    endShape();
+  }
+}
+
+Triangle getTriangleB(int i) {
+  return new Triangle(mesh.get(i).p1.b, mesh.get(i).p2.b, mesh.get(i).p3.b);
+}
+
+void drawHumanRects() {
+  noFill();
+  strokeWeight(3);
+  stroke(0, 255, 0); // green face
+  /*rect(frame.width+humanRects.get(0).x, humanRects.get(0).y, humanRects.get(0).width, humanRects.get(0).height);
+   
+   stroke(255, 0, 0); // red eyes
+   rect(frame.width+humanRects.get(0).x+humanRects.get(1).x, humanRects.get(0).y+humanRects.get(1).y, humanRects.get(1).width, humanRects.get(1).height);
+   rect(frame.width+humanRects.get(0).x+humanRects.get(2).x, humanRects.get(0).y+humanRects.get(2).y, humanRects.get(2).width, humanRects.get(2).height);
+   
+   stroke(0, 0, 255); // blue nose
+   rect(frame.width+humanRects.get(0).x+humanRects.get(3).x, humanRects.get(0).y+humanRects.get(3).y, humanRects.get(3).width, humanRects.get(3).height);
+   
+   stroke(0, 0, 0); // black mouth
+   rect(frame.width+humanRects.get(0).x+humanRects.get(4).x, humanRects.get(0).y+humanRects.get(4).y, humanRects.get(4).width, humanRects.get(4).height);*/
+
+  for (int i = 0; i < humanRects.size (); i++) { //faces.length; i++) {
+    println(humanRects.get(i).x + "," + humanRects.get(i).y);
+    rect(frame.width+humanRects.get(i).x, humanRects.get(i).y, humanRects.get(i).width, humanRects.get(i).height);
+  }
+}
+
+
+
+
+void templateMatch() {
+  //these Rectangles will be added to the shrekRects
+  //they will be used to get the points for morphing
+  Rectangle faceRect;
+  Rectangle L_eyeRect;
+  Rectangle R_eyeRect;
+  Rectangle mouthRect;
+  Rectangle noseRect;
+
+  //calls movietoMat(Movie mov) which converts a Movie to a mat
+  movieMat = movietoMat(src);
+
+  //clone movieMat to get the result which is temporarily the same as the movieMat
+  //when the function getMatchedPoint(...) is done running, movieResMat will have another value
+  movieResMat = movieMat.clone();
+
+  Point faceMatch = getMatchedPoint(movieMat, faceTempMat, movieResMat, Imgproc.TM_CCOEFF_NORMED);
+
+  //ssd between face and the matched point area on frame
+  float ssdFace = calcMSSD(faceMatch, src, shrekFaceTemp);
+
+  if (ssdFace<49) {
+    faceDetected=true;
+    print("shrekDetected=true");
+
+    //noFill();
+    //strokeWeight(3);
+    //stroke(255);
+
+    faceRect = new Rectangle((int)faceMatch.x, (int)faceMatch.y, shrekFaceTemp.width, shrekFaceTemp.height);
+    //rect(faceRect.x, faceRect.y, faceRect.width, faceRect.height);
+
+
+    //getting ready to get mssd for left eye
+    PImage faceImg = frameImg(faceMatch, shrekFaceTemp);
+    Mat frameFaceMat = imgtoMat(faceImg);
+    Mat resFrameFaceMat = frameFaceMat.clone();
+    Point eyeMatch_L = getMatchedPoint(frameFaceMat, leftEyeMat, resFrameFaceMat, Imgproc.TM_CCOEFF_NORMED);
+    float ssd_LEYE = calcMSSD(eyeMatch_L, faceImg, shrekLeftEye);
+    //print("ssd Left Eye", ssd_LEYE, '\n');
+
+    if (ssd_LEYE<49) {
+      L_eyeDetected = true;
+      //stroke(255);
+
+      L_eyeRect = new Rectangle((int)(eyeMatch_L.x+ faceMatch.x), (int)(eyeMatch_L.y+faceMatch.y), shrekLeftEye.width, shrekLeftEye.height);
+      //rect(L_eyeRect.x, L_eyeRect.y, L_eyeRect.width, L_eyeRect.height);
+
+      //strokeWeight(3);
+
+      Point eyeMatch_R = getMatchedPoint(frameFaceMat, rightEyeMat, resFrameFaceMat, Imgproc.TM_CCOEFF_NORMED);
+      float ssd_REYE = calcMSSD(eyeMatch_R, faceImg, shrekRightEye);
+
+      if (ssd_REYE<49) {
+        R_eyeDetected = true;
+        //stroke(250, 0, 0);
+
+        R_eyeRect = new Rectangle((int)(eyeMatch_R.x+ faceMatch.x), (int)(eyeMatch_R.y+faceMatch.y), shrekRightEye.width, shrekRightEye.height);
+        //rect(R_eyeRect.x, R_eyeRect.y, R_eyeRect.width, R_eyeRect.height);
+
+        Point mouthMatch = getMatchedPoint(frameFaceMat, mouthMat, resFrameFaceMat, Imgproc.TM_CCOEFF_NORMED);
+        float ssdMouth = calcMSSD(mouthMatch, faceImg, mouth);
+
+        if (ssdMouth<30) {
+          mouthDetected = true;
+          //stroke(0, 0, 250);
+
+          mouthRect = new Rectangle((int)(mouthMatch.x+ faceMatch.x), (int)(mouthMatch.y+faceMatch.y), mouth.width, mouth.height);
+          //rect(mouthRect.x, mouthRect.y, mouthRect.width, mouthRect.height);
+
+          Point noseMatch = getMatchedPoint(frameFaceMat, noseMat, resFrameFaceMat, Imgproc.TM_CCOEFF_NORMED);
+          float ssdNose = calcMSSD(noseMatch, faceImg, nose);
+
+          if (ssdNose<30) {
+            noseDetected = true;
+
+            //stroke(0);
+
+            noseRect = new Rectangle((int)(noseMatch.x+ faceMatch.x), (int)(noseMatch.y+faceMatch.y), nose.width, nose.height);
+            //rect(noseRect.x, noseRect.y, noseRect.width, noseRect.height);
+
+            if (faceDetected==true && L_eyeDetected == true && R_eyeDetected == true && mouthDetected == true && noseDetected==true) {
+              shrekDetected = true;
+              shrekRects = new ArrayList<Rectangle>(); // reset list of features
+              shrekRects.add(faceRect);
+              shrekRects.add(L_eyeRect);
+              shrekRects.add(R_eyeRect);
+              shrekRects.add(noseRect);
+              shrekRects.add(mouthRect);
+
+              shrekPoints(); // delete if not doign morphing
+            }//end  faceSSD if
+          }//end of L_EYE SSD if
+        }//end of R_EYE SSD if
+      }//end of mouth ssd if
+    }//end of nose ssd if
+  }//close if everthing is detected if statement
+}
+
